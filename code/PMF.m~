@@ -1,0 +1,202 @@
+%%%define result vectors
+RMSE_normalised = []
+
+
+maxepoch=300;     % maximum number of iterations for PMF
+%numclus = [1 17 1]
+numclus = [17 1]
+ds=1 % dataset to be run (1 = IBRL, 2 = Beach)
+maxk= numclus(ds)
+cluster = repelem(1:maxk,1:maxk);
+
+RMSE_inner = zeros(maxepoch, length(cluster));
+
+
+%folder = {'Doc', 'IBRL', 'Beach'}
+folder = {'IBRL', 'Beach'}
+R= dlmread(['data/' char(folder(ds)) '/R.csv']); 
+Rgt = dlmread(['data/' char(folder(ds)) '/Rgt.csv']); 
+
+Rgt = Rgt % for hard experiment choose Rgt, for soft experiment choose R
+
+NAS= 1:75            % NA percentage
+[Nt,M] = size(Rgt);
+msize = Nt*M;
+
+
+final = zeros(length(NAS),maxk);
+finalT= zeros(length(NAS),maxk);
+
+for kk = NAS  %select the percentageof NA for each iteration, from 1 to 75
+    RMSEhard = [];
+    timehard = [];
+    nNA = Nt*M*kk/100; % total number of NAs (counting all sensors)
+    rng(kk);
+    matrixForNA=zeros(Nt,M);
+    elements = randperm(msize, nNA);   % elements in the matrix that are going to be NA
+    matrixForNA(elements) = 1;         % NA 
+    
+    ssaux = 1
+    for k = 1:maxk
+        CLU= dlmread(['data/' char(folder(ds)) '/groupsk.txt']);
+        CLU= CLU(:,[1,(k+1)]);
+        
+        for index = 1:k
+            index
+            fprintf('############')
+            fprintf('index= %s',index)
+            submotes=CLU(find(CLU(:,2)==index),1).';
+            submatrixForNA = matrixForNA(submotes,:);
+            elements2 = find(submatrixForNA');
+            
+            mote = repelem(1:length(submotes),1200);
+            obs = repmat(1:1200,1,length(submotes));
+            
+            
+            temp = [];
+            tempN = [];
+            
+            for i= 1:length(submotes)
+                a = Rgt(submotes(i),:);
+                temp = [temp; a'];
+                b = (a-min(a))/(max(a)-min(a));
+                tempN = [tempN; b'];
+            end
+            
+            
+                           
+            all_data = zeros(length(mote),3);
+            
+            all_data(:,1) = mote;
+            all_data(:,2) = obs;
+            all_data(:,3) = tempN;
+            
+            all_index = 1:length(mote);
+            test_index = elements2;
+            ismem = ismember(all_index,test_index);
+            train_index = all_index(~ismem);
+            
+            
+            
+            train = all_data(train_index,:);
+            test = all_data(test_index,:);
+            
+            % 
+            % PMF original code extracted from Ruslan Salakhutdinov webpage: https://www.cs.toronto.edu/~rsalakhu/BPMF.html
+            %
+            
+            restart=0;
+            epsilon=50; % Learning rate
+            lambda  = 0.01; % Regularization parameter
+            momentum=0.8;
+            
+            epoch=1;
+           
+            mean_rating = mean(train(:,3));
+            
+            
+            pairs_tr = length(train); % training data
+            pairs_pr = length(test); % validation data
+            
+            numbatches= 1; % Number of batches
+            num_m = 1200;  % Number of observations
+            num_p = 51;  % Number of subjets
+            num_feat = 10; % Rank 10 decomposition
+            
+            w1_M1     = 0.1*randn(num_m, num_feat); % Observations feature vectors
+            w1_P1     = 0.1*randn(num_p, num_feat); % Subjets feature vecators
+            w1_M1_inc = zeros(num_m, num_feat);
+            w1_P1_inc = zeros(num_p, num_feat);
+            foo = 1;
+            tic
+            for epoch = epoch:maxepoch
+                epoch
+             
+                rr = randperm(pairs_tr);
+                train = train(rr,:);
+                clear rr
+                
+                for batch = 1:numbatches
+                    % fprintf(1,'epoch %d batch %d \r',epoch,batch);
+                    N=length(train)/numbatches; % number training triplets per batch
+                    
+                    aa_p   = double(train((batch-1)*N+1:batch*N,1));
+                    aa_m   = double(train((batch-1)*N+1:batch*N,2));
+                    rating = double(train((batch-1)*N+1:batch*N,3));
+                    rating = rating-mean_rating; % Default prediction is the mean rating.
+                    
+                    %%%%%%%%%%%%%% Compute Predictions %%%%%%%%%%%%%%%%%
+                    pred_out = sum(w1_M1(aa_m,:).*w1_P1(aa_p,:),2);
+                    
+                    %%%%%%%%%%%%%% Compute Gradients %%%%%%%%%%%%%%%%%%%
+                    IO = repmat(2*(pred_out - rating),1,num_feat);
+                    Ix_m=IO.*w1_P1(aa_p,:) + lambda*w1_M1(aa_m,:);
+                    Ix_p=IO.*w1_M1(aa_m,:) + lambda*w1_P1(aa_p,:);
+                    
+                    dw1_M1 = zeros(num_m,num_feat);
+                    dw1_P1 = zeros(num_p,num_feat);
+                    
+                    for ii=1:N
+                        dw1_M1(aa_m(ii),:) =  dw1_M1(aa_m(ii),:) +  Ix_m(ii,:);
+                        dw1_P1(aa_p(ii),:) =  dw1_P1(aa_p(ii),:) +  Ix_p(ii,:);
+                    end
+                    
+                    %%%% Update movie and user features %%%%%%%%%%%
+                    
+                    w1_M1_inc = momentum*w1_M1_inc + epsilon*dw1_M1/N;
+                    w1_M1 =  w1_M1 - w1_M1_inc;
+                    
+                    w1_P1_inc = momentum*w1_P1_inc + epsilon*dw1_P1/N;
+                    w1_P1 =  w1_P1 - w1_P1_inc;
+                end
+                
+                
+                %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+                %%% Compute predictions on the validation set %%%%%%%%%%%%%%%%%%%%%%
+                NN=pairs_pr;
+                
+                aa_p = double(test(:,1));
+                aa_m = double(test(:,2));
+                %rating = double(test(:,3));
+                
+                
+                pred_out = sum(w1_M1(aa_m,:).*w1_P1(aa_p,:),2) + mean_rating;
+
+
+                realTest = temp(test_index);
+                maxTrain = max(temp(train_index));
+                minTrain = min(temp(train_index));
+                
+                predTest = pred_out*(maxTrain-minTrain) + minTrain;
+                
+                RMSE = sqrt(mean((realTest - predTest).^2));
+                RMSE_inner(epoch, ssaux) = RMSE;
+            end
+            
+            
+            timehard = [timehard, toc]
+            %RMSE_normalised = [RMSE_normalised, err_valid(epoch)]
+            RMSEhard = [RMSEhard,RMSE]
+            
+            foo = foo+1
+            ssaux = ssaux+1;
+        end          
+    end
+    
+    
+    df = mat2dataset([cluster', RMSEhard']);
+    dfstat = grpstats(df,'Var1');
+    final(kk, :) = double(dfstat(:,3));
+    
+    
+    df2 = mat2dataset([cluster', timehard']);
+    dfstat = grpstats(df2,'Var1',{'sum'})
+    finalT(kk, :) = double(dfstat(:,3));
+    csvwrite(['/home/aurora/Git_repos/posgradoActual/joseMendoza/20190706/data/' char(folder(ds)) '/PMFres/08.RMSEsoft-iii.csv'],final)
+    csvwrite(['/home/aurora/Git_repos/posgradoActual/joseMendoza/20190706/data/' char(folder(ds)) '/PMFres/08.timesoft-iiisl.csv'],finalT)
+    
+end
+
+
+%csvwrite('fig11NA10pNUMCLchangesInnerRMSE.csv',RMSE_inner)
+%csvwrite('/home/aurora/uuh.csv',[cluster; timehard; RMSEhard])
